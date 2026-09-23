@@ -27,8 +27,8 @@ features = [
     'transaction_hour',
     'is_international',
     'previous_transaction_amount',
-    'is_home_city',        # NEW: 1 if transaction is in home city, 0 otherwise
-    'is_preferred_device'  # NEW: 1 if device matches preferred, 0 otherwise
+    'is_home_city',
+    'is_preferred_device'
 ]
 # Create new features from existing data
 df['is_home_city'] = (df['location'] == df['user_id'].map(
@@ -79,7 +79,7 @@ model.fit(X_train, y_train)
 print("\n--- Model Evaluation ---")
 
 y_pred_proba = model.predict_proba(X_test)[:, 1]
-threshold = 0.1  # Lower threshold catches more fraud
+threshold = 0.4  # Lower threshold catches more fraud
 y_pred = (y_pred_proba >= threshold).astype(int)
 
 
