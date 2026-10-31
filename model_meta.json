@@ -1,0 +1,1 @@
+{"features": ["amount", "time_since_last_transaction", "transaction_hour", "is_international", "previous_transaction_amount", "is_home_city", "is_preferred_device"], "threshold": 0.8379542827606201, "version": "2.0.0", "pr_auc": 0.0943}

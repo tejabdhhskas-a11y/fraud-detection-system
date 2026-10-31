@@ -1,106 +1,56 @@
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, precision_recall_curve, auc
-from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report, roc_auc_score, average_precision_score, precision_recall_curve, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
-import warnings
-import joblib
+import json, warnings
 
 warnings.filterwarnings('ignore')
-
-# --- Step 1: Load Data ---
-print("Loading data...")
 df = pd.read_csv('transactions.csv')
 df['transaction_time'] = pd.to_datetime(df['transaction_time'])
 
-print(f"Dataset shape: {df.shape}")
-print(f"Fraud percentage: {df['is_fraud'].mean()*100:.2f}%")
+features = ['amount', 'time_since_last_transaction', 'transaction_hour', 'is_international', 
+            'previous_transaction_amount', 'is_home_city', 'is_preferred_device']
 
-# --- Step 2: Time-Based Split (Reviewer Fix) ---
-print("\nPerforming time-based split...")
-cutoff_date = df['transaction_time'].quantile(0.70)
+# 3-WAY TIME SPLIT
+t1, t2 = df['transaction_time'].quantile([0.60, 0.80])
+train_df = df[df['transaction_time'] < t1]
+val_df = df[(df['transaction_time'] >= t1) & (df['transaction_time'] < t2)]
+test_df = df[df['transaction_time'] >= t2]
 
-train_df = df[df['transaction_time'] < cutoff_date]
-test_df = df[df['transaction_time'] >= cutoff_date]
+X_train, y_train = train_df[features], train_df['is_fraud']
+X_val, y_val = val_df[features], val_df['is_fraud']
+X_test, y_test = test_df[features], test_df['is_fraud']
 
-print(f"Cutoff Date: {cutoff_date}")
-print(f"Training set: {train_df.shape[0]:,} transactions")
-print(f"Testing set: {test_df.shape[0]:,} transactions")
+# True class ratio
+spw = (y_train == 0).sum() / (y_train == 1).sum() 
 
-# --- Step 3: Feature Selection ---
-features = [
-    'amount',
-    'time_since_last_transaction',
-    'transaction_hour',
-    'is_international',
-    'previous_transaction_amount',
-    'is_home_city',
-    'is_preferred_device'
-]
+model = xgb.XGBClassifier(n_estimators=200, max_depth=6, learning_rate=0.1,
+                          scale_pos_weight=spw, random_state=42, eval_metric='aucpr')
+model.fit(X_train, y_train)
 
-X_train = train_df[features]
-y_train = train_df['is_fraud']
+# TUNE THRESHOLD ON VALIDATION (F2-Score)
+val_proba = model.predict_proba(X_val)[:, 1]
+p, r, thr = precision_recall_curve(y_val, val_proba)
+f2 = (5 * p * r) / (4 * p + r + 1e-12)
+THRESHOLD = float(thr[np.argmax(f2[:-1])])
 
-X_test = test_df[features]
-y_test = test_df['is_fraud']
+# FINAL EVALUATION ON TEST
+test_proba = model.predict_proba(X_test)[:, 1]
+y_pred = (test_proba >= THRESHOLD).astype(int)
+pr_auc = average_precision_score(y_test, test_proba)
 
-# --- Step 4: Scaling ---
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
-
-# --- Step 5: Train XGBoost Model ---
-print("\nTraining XGBoost model...")
-
-model = xgb.XGBClassifier(
-    n_estimators=100,
-    max_depth=6,
-    learning_rate=0.1,
-    scale_pos_weight=10, # Balanced approach: penalizes missing fraud 10x more than a false alarm
-    random_state=42,
-    eval_metric='logloss'
-)
-
-model.fit(X_train_scaled, y_train)
-
-# --- Step 6: Evaluate with Custom Threshold ---
-print("\n--- Model Evaluation ---")
-THRESHOLD = 0.4
-
-y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
-y_pred = (y_pred_proba >= THRESHOLD).astype(int)
-
-accuracy = (y_pred == y_test).mean()
-roc_auc = roc_auc_score(y_test, y_pred_proba)
-
-precision, recall, _ = precision_recall_curve(y_test, y_pred_proba)
-pr_auc = auc(recall, precision)
-
-print(f"Threshold: {THRESHOLD}")
-print(f"Accuracy: {accuracy:.4f}")
-print(f"ROC AUC: {roc_auc:.4f}")
-print(f"PR AUC (Precision-Recall): {pr_auc:.4f}")
-
-print("\nClassification Report:")
+print(f"Tuned Threshold: {THRESHOLD:.4f}")
+print(f"Test PR-AUC: {pr_auc:.4f}")
 print(classification_report(y_test, y_pred))
 
-# --- Step 7: Confusion Matrix ---
+# SAVE ARTIFACTS
+model.save_model("fraud_model.json")
+json.dump({"features": features, "threshold": THRESHOLD, "version": "2.0.0", "pr_auc": round(pr_auc, 4)}, open("model_meta.json", "w"))
+
 cm = confusion_matrix(y_test, y_pred)
 plt.figure(figsize=(8, 6))
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-plt.title(f'Confusion Matrix (Threshold = {THRESHOLD})')
-plt.xlabel('Predicted')
-plt.ylabel('Actual')
 plt.savefig('confusion_matrix.png')
-print("\nConfusion matrix saved as 'confusion_matrix.png'")
-
-# --- Step 8: Save the Model ---
-model.save_model("fraud_model.json")
-joblib.dump(scaler, 'scaler.pkl')
-joblib.dump(model, 'fraud_model.pkl') 
-print("\nModel saved as 'fraud_model.json' and 'fraud_model.pkl'")
-print("Scaler saved as 'scaler.pkl'")
-
-print("\n✅ Model training complete!")
+plt.close()
